@@ -1,0 +1,27 @@
+# .gitignore for Supervised-Learning-Gym-CarRacing-
+
+# Python bytecode / caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# rl_approach specific
+/rl_approach/__pycache__/
+/rl_approach/checkpoints/
+/rl_approach/logs/
+/rl_approach/*.pyc
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Virtual environments
+venv/
+.env/
+.envs/
+
+# Ignore collected file list
+rl_approach/collected_py_files.txt
