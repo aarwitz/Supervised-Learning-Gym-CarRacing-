@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from torch.distributions import Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
+from typing import Tuple
 
 
 class ActorCritic(nn.Module):
@@ -12,11 +13,28 @@ class ActorCritic(nn.Module):
     a policy (actor) and a value function (critic).
     So, this class produces two outputs from one shared neural network backbone:
         - Actor (the policy) outputs the mean and log-standard-deviation parameters
-          of a Gaussian  distribution over continuous actions (steer, gas, brake).
+          of a Gaussian distribution over continuous actions (steer, gas, brake).
         - Critic (the value function) outputs state value, V(s), and is used
           for advantage estimation.
+
+    ActorCritic inherits from nn.Module which gives:
+        - Parameter management (.parameters(), .named_parameters())
+        - Model saving and loading (.state_dict(), .load_state_dict())
+        - Device management (to(), cuda(), cpu())
+        - Gradient computation and backpropagation (zero_grad(), backward(), step())
     """
-    def __init__(self, num_inputs=4, num_actions=3):
+    def __init__(self, num_inputs: int = 4, num_actions: int = 3) -> None:
+        """
+        Initialize the Actor-Critic network.
+
+        Args:
+            num_inputs: Number of input channels. Default is 4 for stacking 4 consecutive 
+                       grayscale frames, which allows the CNN to perceive short-term motion 
+                       and velocity. This approach follows Atari DQN and other successful RL 
+                       implementations.
+            num_actions: Number of continuous action outputs. Default is 3 for CarRacing-v3: 
+                        [steer, gas, brake], each in range [-1, 1].
+        """
         super(ActorCritic, self).__init__()
         
         # Shared CNN feature extractor
@@ -25,7 +43,7 @@ class ActorCritic(nn.Module):
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
         
         # Calculate conv output size
-        def conv2d_size_out(size, kernel_size, stride):
+        def conv2d_size_out(size: int, kernel_size: int, stride: int) -> int:
             return (size - (kernel_size - 1) - 1) // stride + 1
         
         convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 2), 3, 1)
@@ -47,7 +65,8 @@ class ActorCritic(nn.Module):
         # Initialize weights
         self._initialize_weights()
     
-    def _initialize_weights(self):
+    def _initialize_weights(self) -> None:
+        """Initialize network weights using orthogonal initialization."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
@@ -58,7 +77,18 @@ class ActorCritic(nn.Module):
         nn.init.orthogonal_(self.action_mean.weight, gain=0.01)
         nn.init.constant_(self.action_mean.bias, 0)
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the network.
+
+        Args:
+            x: Input state tensor of shape (batch_size, num_inputs, 84, 84).
+
+        Returns:
+            action_mean: Mean of action distribution, shape (batch_size, num_actions).
+            action_std: Standard deviation of action distribution, shape (batch_size, num_actions).
+            value: State value estimate, shape (batch_size, 1).
+        """
         # Shared feature extraction
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -78,9 +108,18 @@ class ActorCritic(nn.Module):
         
         return action_mean, action_std, value
     
-    def act(self, state, deterministic=False):
+    def act(self, state: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Sample an action from the policy (uses tanh-squashed distribution).
+        Sample an action from the policy using a tanh-squashed Gaussian distribution.
+
+        Args:
+            state: Input state tensor of shape (batch_size, num_inputs, 84, 84).
+            deterministic: If True, return deterministic action (tanh of mean). 
+                          If False, sample from the distribution.
+
+        Returns:
+            action: Sampled or deterministic action, shape (batch_size, num_actions), range [-1, 1].
+            value: State value estimate, shape (batch_size, 1).
         """
         action_mean, action_std, value = self.forward(state)
 
@@ -97,10 +136,18 @@ class ActorCritic(nn.Module):
 
         return action, value
 
-    def evaluate_actions(self, state, action):
+    def evaluate_actions(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Evaluate actions for PPO update.
-        Returns action log probabilities, state values, and entropy.
+
+        Args:
+            state: Input state tensor of shape (batch_size, num_inputs, 84, 84).
+            action: Action tensor to evaluate, shape (batch_size, num_actions), range [-1, 1].
+
+        Returns:
+            action_log_probs: Log probabilities of the actions, shape (batch_size, 1).
+            value: State value estimates, shape (batch_size, 1).
+            entropy: Entropy of the action distribution, shape (batch_size, 1).
         """
         action_mean, action_std, value = self.forward(state)
 
@@ -119,16 +166,31 @@ class ActorCritic(nn.Module):
 
         return action_log_probs, value, entropy
 
-    def get_value(self, state):
+    def get_value(self, state: torch.Tensor) -> torch.Tensor:
         """
-        Get state value for critic.
+        Get state value estimate from the critic.
+
+        Args:
+            state: Input state tensor of shape (batch_size, num_inputs, 84, 84).
+
+        Returns:
+            value: State value estimate, shape (batch_size, 1).
         """
         _, _, value = self.forward(state)
         return value
     
-    def process_action(self, action):
+    def process_action(self, action: torch.Tensor) -> np.ndarray:
         """
-        Convert network output (already tanh-squashed) to environment action numpy array.
+        Convert network output action to environment-compatible numpy array.
+
+        Args:
+            action: Action tensor from the network, shape (1, num_actions), range [-1, 1].
+
+        Returns:
+            Numpy array of shape (3,) with [steer, gas, brake].
+            - steer: float in range [-1, 1]
+            - gas: float in range [0, 1]
+            - brake: float in range [0, 1]
         """
         # action is expected in range [-1, 1]
         action_np = action.cpu().detach().numpy()[0]

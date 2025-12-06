@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from typing import Dict, List, Tuple, Any, Optional
 from collections import deque
 
 
@@ -11,18 +12,34 @@ class PPOAgent:
     """
     def __init__(
         self, 
-        network,
-        learning_rate=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_epsilon=0.2,
-        value_coef=0.5,
-        entropy_coef=0.01,
-        max_grad_norm=0.5,
-        ppo_epochs=10,
-        mini_batch_size=64,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
-    ):
+        network: nn.Module,
+        learning_rate: float = 3e-4,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_epsilon: float = 0.2,
+        value_coef: float = 0.5,
+        entropy_coef: float = 0.01,
+        max_grad_norm: float = 0.5,
+        ppo_epochs: int = 10,
+        mini_batch_size: int = 64,
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    ) -> None:
+        """
+        Initialize the PPO agent.
+
+        Args:
+            network: Actor-Critic neural network.
+            learning_rate: Learning rate for the optimizer.
+            gamma: Discount factor for future rewards.
+            gae_lambda: Lambda parameter for Generalized Advantage Estimation (GAE).
+            clip_epsilon: Clipping parameter for PPO objective.
+            value_coef: Coefficient for value loss in the total loss.
+            entropy_coef: Coefficient for entropy bonus in the total loss.
+            max_grad_norm: Maximum gradient norm for gradient clipping.
+            ppo_epochs: Number of epochs to update the policy per batch.
+            mini_batch_size: Size of mini-batches for SGD updates.
+            device: Device to run computations on ('cuda' or 'cpu').
+        """
         self.network = network.to(device)
         self.optimizer = optim.Adam(self.network.parameters(), lr=learning_rate)
         
@@ -38,9 +55,18 @@ class PPOAgent:
         
         self.memory = RolloutBuffer()
         
-    def select_action(self, state, deterministic=False):
+    def select_action(self, state: np.ndarray, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Select action given state and also return log probability and value.
+        Select action given state and return action, value, and log probability.
+
+        Args:
+            state: Current state observation, numpy array of shape (frame_stack, 84, 84).
+            deterministic: If True, return deterministic action. If False, sample from distribution.
+
+        Returns:
+            action: Selected action tensor, shape (1, num_actions).
+            value: State value estimate tensor, shape (1, 1).
+            log_prob: Log probability of the action tensor, shape (1, 1).
         """
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -50,15 +76,27 @@ class PPOAgent:
         
         return action, value, log_prob
     
-    def store_transition(self, state, action, reward, value, log_prob, done):
+    def store_transition(self, state: np.ndarray, action: torch.Tensor, reward: float, 
+                        value: torch.Tensor, log_prob: torch.Tensor, done: bool) -> None:
         """
-        Store transition in memory.
+        Store transition in memory buffer.
+
+        Args:
+            state: State observation.
+            action: Action taken.
+            reward: Reward received.
+            value: State value estimate.
+            log_prob: Log probability of the action.
+            done: Whether the episode terminated.
         """
         self.memory.add(state, action, reward, value, log_prob, done)
     
-    def update(self):
+    def update(self) -> Dict[str, float]:
         """
-        Update policy using PPO.
+        Update policy using PPO algorithm.
+
+        Returns:
+            Dictionary containing average losses: 'policy_loss', 'value_loss', 'entropy_loss'.
         """
         # Get data from memory
         states, actions, rewards, values, log_probs, dones = self.memory.get()
@@ -174,9 +212,20 @@ class PPOAgent:
                 'entropy_loss': 0
             }
     
-    def _compute_gae(self, rewards, values, dones, last_value=0.0):
+    def _compute_gae(self, rewards: List[float], values: List[float], dones: List[bool], 
+                     last_value: float = 0.0) -> Tuple[List[float], List[float]]:
         """
         Compute Generalized Advantage Estimation (GAE) with optional bootstrap.
+
+        Args:
+            rewards: List of rewards for each timestep.
+            values: List of state value estimates for each timestep.
+            dones: List of done flags for each timestep.
+            last_value: Bootstrap value for the last state (if episode didn't terminate).
+
+        Returns:
+            returns: List of discounted returns for each timestep.
+            advantages: List of advantage estimates for each timestep.
         """
         advantages = []
         returns = []
@@ -199,9 +248,12 @@ class PPOAgent:
         
         return returns, advantages
     
-    def save(self, filepath):
+    def save(self, filepath: str) -> None:
         """
-        Save model.
+        Save model checkpoint.
+
+        Args:
+            filepath: Path to save the checkpoint file.
         """
         torch.save({
             'network_state_dict': self.network.state_dict(),
@@ -209,9 +261,12 @@ class PPOAgent:
         }, filepath)
         print(f"Model saved to {filepath}")
     
-    def load(self, filepath):
+    def load(self, filepath: str) -> None:
         """
-        Load model.
+        Load model checkpoint.
+
+        Args:
+            filepath: Path to the checkpoint file to load.
         """
         checkpoint = torch.load(filepath, map_location=self.device)
         self.network.load_state_dict(checkpoint['network_state_dict'])
@@ -221,17 +276,30 @@ class PPOAgent:
 
 class RolloutBuffer:
     """
-    Buffer for storing rollout data.
+    Buffer for storing rollout data during episode collection.
     """
-    def __init__(self):
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.values = []
-        self.log_probs = []
-        self.dones = []
+    def __init__(self) -> None:
+        """Initialize empty buffer."""
+        self.states: List[np.ndarray] = []
+        self.actions: List[torch.Tensor] = []
+        self.rewards: List[float] = []
+        self.values: List[float] = []
+        self.log_probs: List[float] = []
+        self.dones: List[bool] = []
     
-    def add(self, state, action, reward, value, log_prob, done):
+    def add(self, state: np.ndarray, action: torch.Tensor, reward: float, 
+            value: torch.Tensor, log_prob: torch.Tensor, done: bool) -> None:
+        """
+        Add a transition to the buffer.
+
+        Args:
+            state: State observation.
+            action: Action taken.
+            reward: Reward received.
+            value: State value estimate.
+            log_prob: Log probability of the action.
+            done: Whether the episode terminated.
+        """
         self.states.append(state)
         self.actions.append(action)
         self.rewards.append(reward)
@@ -239,7 +307,14 @@ class RolloutBuffer:
         self.log_probs.append(log_prob)
         self.dones.append(done)
     
-    def get(self):
+    def get(self) -> Tuple[List[np.ndarray], List[torch.Tensor], List[float], 
+                           List[float], List[float], List[bool]]:
+        """
+        Get all stored transitions.
+
+        Returns:
+            Tuple of (states, actions, rewards, values, log_probs, dones).
+        """
         return (
             self.states,
             self.actions,
@@ -249,7 +324,8 @@ class RolloutBuffer:
             self.dones
         )
     
-    def clear(self):
+    def clear(self) -> None:
+        """Clear all stored transitions."""
         self.states = []
         self.actions = []
         self.rewards = []
@@ -257,5 +333,6 @@ class RolloutBuffer:
         self.log_probs = []
         self.dones = []
     
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of transitions in the buffer."""
         return len(self.states)
