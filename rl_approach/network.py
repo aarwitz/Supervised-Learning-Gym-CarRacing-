@@ -7,11 +7,14 @@ from torch.distributions.transforms import TanhTransform
 
 
 class ActorCritic(nn.Module):
-    """
-    Actor-Critic network for PPO.
-    - Actor outputs the mean and log-standard-deviation parameters of a Gaussian 
-    distribution over continuous actions (steer, gas, brake).
-    - Critic outputs state value, V(s).
+    """ 
+    PPO can be interpreted as an actor-critic algorithm in that it has
+    a policy (actor) and a value function (critic).
+    So, this class produces two outputs from one shared neural network backbone:
+        - Actor (the policy) outputs the mean and log-standard-deviation parameters
+          of a Gaussian  distribution over continuous actions (steer, gas, brake).
+        - Critic (the value function) outputs state value, V(s), and is used
+          for advantage estimation.
     """
     def __init__(self, num_inputs=4, num_actions=3):
         super(ActorCritic, self).__init__()
