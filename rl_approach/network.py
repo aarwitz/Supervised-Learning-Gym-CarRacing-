@@ -6,6 +6,15 @@ from torch.distributions import Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from typing import Tuple
 
+#           ┌──────────────┐
+#           │ Shared CNN+FC│  ← receives gradients from both losses
+#           └──────┬───────┘
+#       ┌──────────┴──────────┐
+#       │                     │
+#  Actor head             Critic head
+# (policy loss)           (value loss)
+# (entropy loss)
+
 
 class ActorCritic(nn.Module):
     """ 
@@ -16,6 +25,30 @@ class ActorCritic(nn.Module):
           of a Gaussian distribution over continuous actions (steer, gas, brake).
         - Critic (the value function) outputs state value, V(s), and is used
           for advantage estimation.
+            - We need the critic because the environment just reads the reward for that single observation,
+              whereas the value function estimates total rewards of the policy, including in the future.
+              So the critic learns to estimate the value of being in a given state under the current policy (the value does indeed depend on the policy)
+              - Target: return_t​=rt​+γrt+1​+γ2rt+2​+…
+              - Critic prediction: V_θ​(s_t​
+              - Critic loss = ||V_θ​(s_t​)-return_t||^2
+            - This led me to the question: the value function depends on the policy, but the value head and the policy head are separate,
+              so how do you estimate the value without knowing the policy parameters?
+              - Answer:
+                - The critic never actually needs to know the policy parameters directly.
+                - Since both heads share the same CNN and FC layers, the features extracted are influenced by both the policy
+                  and value losses during training.
+            - And then another question: the policy is changing during training, does that mean the value function is always "chasing a moving target"?
+               - Answer:
+                - Yes, it does. This is a known challenge in actor-critic methods, and techniques like using target networks or
+                  slower updates for the critic are often employed to stabilize training.
+                - Policy updates are slow and we make sure of it using clipping
+                    The Clip Function: The probability ratio (probability of doing action given state with new to old policy)
+                    is clipped to a small interval around 1, typically [1-ϵ ,1+ϵ ], where ϵ is a hyperparameter, often set to 0.2.
+        - Sharing a backbone between the actor and critic has several benefits:
+            - Efficiency: Fewer parameters to learn, faster inference.
+            - Regularization: Shared features can help prevent overfitting - they have different goals in a way that complements each other.
+            - Coordinated learning: Updates to one head can positively influence the other.
+
 
     ActorCritic inherits from nn.Module which gives:
         - Parameter management (.parameters(), .named_parameters())
@@ -38,9 +71,20 @@ class ActorCritic(nn.Module):
         super(ActorCritic, self).__init__()
         
         # Shared CNN feature extractor
+        # First layer has large kernel and stride to downsample quickly because the input is 4 frames of 84x84.
+        # Kernel size of 8 extracts coarse spatial patterns and is a good size for seeing the grass vs track, big curves
+        # Outputting channel of 32 is a good balance between expressiveness and computational cost, "enough to get basic visual primitives"
         self.conv1 = nn.Conv2d(num_inputs, 32, kernel_size=8, stride=4)
+        # Second layer captures slightly smaller features like road edges and car boundaries
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        # Third layer captures fine details using smaller kernel and just a stride of 1 so as not to lose spatial resolution
+        # Spatial resolution has already been shrunk a lot so we can afford a small kernel here
+        # The final conv layer is the "feature blender" that combines all extracted features before feeding the fully connected layer
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        # Summary:
+        #   conv1: massive downsampling + big visual primitives
+        #   conv2: medium receptive features + more downsampling
+        #   conv3: fine feature extraction + no downsampling
         
         # Calculate conv output size
         def conv2d_size_out(size: int, kernel_size: int, stride: int) -> int:
@@ -57,6 +101,10 @@ class ActorCritic(nn.Module):
         self.fc_actor = nn.Linear(512, 256)
         self.action_mean = nn.Linear(256, num_actions)
         self.action_log_std = nn.Parameter(torch.zeros(1, num_actions))
+        # action_log_std is stored as a free parameter, pytorch registers it as a learnable parameter, initialized to zeros,
+        # representing log standard deviation of actions.
+        # while not connected to the actor MLP it influences the action distribution, which affects the log probability,
+        # which then affects the PPO loss.
         
         # Critic head (value function)
         self.fc_critic = nn.Linear(512, 256)
